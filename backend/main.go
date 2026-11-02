@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/host"
 	"github.com/shirou/gopsutil/v4/mem"
+	gnet "github.com/shirou/gopsutil/v4/net"
 	"github.com/shirou/gopsutil/v4/process"
 )
 
@@ -32,15 +34,16 @@ type failure struct {
 	until time.Time
 }
 type processRow struct {
-	PID     int32   `json:"pid"`
-	PPID    int32   `json:"ppid"`
-	Name    string  `json:"name"`
-	User    string  `json:"user"`
-	CPU     float64 `json:"cpu"`
-	RSS     uint64  `json:"rss"`
-	Threads int32   `json:"threads"`
-	State   string  `json:"state"`
-	Cmdline string  `json:"cmdline"`
+	PID     int32    `json:"pid"`
+	PPID    int32    `json:"ppid"`
+	Name    string   `json:"name"`
+	User    string   `json:"user"`
+	CPU     float64  `json:"cpu"`
+	RSS     uint64   `json:"rss"`
+	Threads int32    `json:"threads"`
+	Ports   []uint32 `json:"ports"`
+	State   string   `json:"state"`
+	Cmdline string   `json:"cmdline"`
 }
 type stats struct {
 	CPU         float64   `json:"cpu"`
@@ -171,6 +174,23 @@ func clientIP(r *http.Request) string {
 	return h
 }
 func (a *app) processes(w http.ResponseWriter, _ *http.Request) {
+	portsByPID := make(map[int32]map[uint32]struct{})
+	if connections, err := gnet.Connections("all"); err == nil {
+		for _, connection := range connections {
+			if connection.Pid <= 0 || connection.Laddr.Port == 0 {
+				continue
+			}
+			isTCPListener := connection.Type == uint32(syscall.SOCK_STREAM) && connection.Status == "LISTEN"
+			isUDPPort := connection.Type == uint32(syscall.SOCK_DGRAM)
+			if !isTCPListener && !isUDPPort {
+				continue
+			}
+			if portsByPID[connection.Pid] == nil {
+				portsByPID[connection.Pid] = make(map[uint32]struct{})
+			}
+			portsByPID[connection.Pid][connection.Laddr.Port] = struct{}{}
+		}
+	}
 	ps, e := process.Processes()
 	if e != nil {
 		writeError(w, 500, "Unable to read /proc: "+e.Error())
@@ -187,6 +207,10 @@ func (a *app) processes(w http.ResponseWriter, _ *http.Request) {
 			row.RSS = m.RSS
 		}
 		row.Threads, _ = p.NumThreads()
+		for port := range portsByPID[p.Pid] {
+			row.Ports = append(row.Ports, port)
+		}
+		sort.Slice(row.Ports, func(i, j int) bool { return row.Ports[i] < row.Ports[j] })
 		state, _ := p.Status()
 		row.State = strings.Join(state, ",")
 		row.Cmdline, _ = p.Cmdline()

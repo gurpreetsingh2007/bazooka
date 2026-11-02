@@ -5,7 +5,7 @@ Bazooka is a lightweight host process manager served from one Docker container a
 ## Features
 
 - Host PID, parent PID, name, user, CPU percentage, resident memory, threads, state and command line.
-- Two second refresh with pause, sortable columns, text filter and parent/child tree view.
+- Two second refresh with pause, sortable columns, text filter (including listening TCP and bound UDP ports) and parent/child tree view.
 - End (SIGTERM), force kill (SIGKILL), pause (SIGSTOP) and resume (SIGCONT), with confirmation and optional descendants.
 - PID 1 and Bazooka's own PID are protected from signals.
 - Host CPU, memory, load average, uptime and process count.

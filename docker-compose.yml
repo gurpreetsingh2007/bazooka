@@ -1,0 +1,28 @@
+services:
+  bazooka:
+    build: .
+    container_name: bazooka
+    pid: host
+    user: "0:0"
+    ports:
+      - "${PORT:-8080}:${PORT:-8080}"
+    environment:
+      PORT: ${PORT:-8080}
+      TM_TOKEN: ${TM_TOKEN:?Set TM_TOKEN in .env}
+    cap_drop:
+      - ALL
+    cap_add:
+      - KILL
+      - SYS_PTRACE
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/bazooka", "healthcheck"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s

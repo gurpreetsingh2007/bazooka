@@ -72,6 +72,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .button { padding: 8px 10px; font-size: 10px; white-space: nowrap; }
 .inline-error { padding: 10px 15px; background: #2a171c; color: #ff9c9c; font-size: 12px; }
 .inline-error button { margin-left: 9px; }
+.data-warning { display: flex; align-items: center; gap: 8px; padding: 9px 15px; border-bottom: 1px solid #584622; background: #2a2418; color: #e6c47d; font-size: 10px; }
+.data-warning span { color: #ffd16b; font-size: 14px; }
 .table-scroll { max-height: calc(100vh - 405px); min-height: 300px; overflow: auto; }
 table { width: 100%; border-collapse: collapse; text-align: left; white-space: nowrap; }
 thead { position: sticky; z-index: 1; top: 0; background: #151c28; }
@@ -90,6 +92,8 @@ tbody tr.selected { background: #22301f; box-shadow: inset 2px 0 var(--accent); 
 .num { color: #d2dae4; }
 .ports { max-width: 105px; overflow: hidden; text-overflow: ellipsis; }
 .port-chip { display: inline-block; margin: 1px 3px 1px 0; padding: 3px 5px; border: 1px solid #34432d; border-radius: 4px; background: #1b2818; color: var(--accent); font: 9px var(--mono); }
+.port-chip.remote { border-color: #314255; background: #172332; color: #9cc9ff; }
+.port-more { color: #99a5b5; font: 9px var(--mono); }
 .command { max-width: 320px; overflow: hidden; color: #8290a2; font: 9px var(--mono); text-overflow: ellipsis; }
 .state { display: inline-block; padding: 3px 6px; border-radius: 5px; background: #222c38; color: #b5c1cf; font: 9px var(--mono); }
 .state-r { background: #23311d; color: var(--accent); }
@@ -217,6 +221,9 @@ tbody tr.selected { background: #22301f; box-shadow: inset 2px 0 var(--accent); 
   tbody tr:hover { background: #f0f5eb; }
   tbody tr.selected { background: #edf6e5; }
   .port-chip { border-color: #cddfb7; background: #eef6e6; color: #47751d; }
+  .port-chip.remote { border-color: #cfdeee; background: #edf4fb; color: #306ca7; }
+  .data-warning { border-color: #ebd8a7; background: #fff9e8; color: #795714; }
+  .data-warning span { color: #a36e00; }
   .state { background: #e9eef3; color: #515d6d; }
   .state-r { background: #e7f1de; color: #3b7010; }
   .state-s { background: #e5eff9; color: #24619b; }

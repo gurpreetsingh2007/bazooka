@@ -33,20 +33,26 @@ type failure struct {
 	count int
 	until time.Time
 }
+type processPort struct {
+	Port     uint32 `json:"port"`
+	Scope    string `json:"scope"`
+	Protocol string `json:"protocol"`
+	State    string `json:"state,omitempty"`
+}
 type processRow struct {
-	PID     int32    `json:"pid"`
-	PPID    int32    `json:"ppid"`
-	Name    string   `json:"name"`
-	User    string   `json:"user"`
-	Service string   `json:"service"`
-	Exe     string   `json:"exe"`
-	Cwd     string   `json:"cwd"`
-	CPU     float64  `json:"cpu"`
-	RSS     uint64   `json:"rss"`
-	Threads int32    `json:"threads"`
-	Ports   []uint32 `json:"ports"`
-	State   string   `json:"state"`
-	Cmdline string   `json:"cmdline"`
+	PID     int32         `json:"pid"`
+	PPID    int32         `json:"ppid"`
+	Name    string        `json:"name"`
+	User    string        `json:"user"`
+	Service string        `json:"service"`
+	Exe     string        `json:"exe"`
+	Cwd     string        `json:"cwd"`
+	CPU     float64       `json:"cpu"`
+	RSS     uint64        `json:"rss"`
+	Threads int32         `json:"threads"`
+	Ports   []processPort `json:"ports"`
+	State   string        `json:"state"`
+	Cmdline string        `json:"cmdline"`
 }
 type stats struct {
 	CPU         float64   `json:"cpu"`
@@ -186,22 +192,36 @@ func clientIP(r *http.Request) string {
 	return h
 }
 func (a *app) processes(w http.ResponseWriter, _ *http.Request) {
-	portsByPID := make(map[int32]map[uint32]struct{})
+	portsByPID := make(map[int32]map[processPort]struct{})
+	var warnings []string
 	if connections, err := gnet.Connections("all"); err == nil {
 		for _, connection := range connections {
-			if connection.Pid <= 0 || connection.Laddr.Port == 0 {
+			if connection.Pid <= 0 {
 				continue
 			}
-			isTCPListener := connection.Type == uint32(syscall.SOCK_STREAM) && connection.Status == "LISTEN"
-			isUDPPort := connection.Type == uint32(syscall.SOCK_DGRAM)
-			if !isTCPListener && !isUDPPort {
+			protocol := ""
+			switch connection.Type {
+			case uint32(syscall.SOCK_STREAM):
+				protocol = "TCP"
+			case uint32(syscall.SOCK_DGRAM):
+				protocol = "UDP"
+			default:
 				continue
 			}
 			if portsByPID[connection.Pid] == nil {
-				portsByPID[connection.Pid] = make(map[uint32]struct{})
+				portsByPID[connection.Pid] = make(map[processPort]struct{})
 			}
-			portsByPID[connection.Pid][connection.Laddr.Port] = struct{}{}
+			if connection.Laddr.Port > 0 {
+				port := processPort{Port: connection.Laddr.Port, Scope: "local", Protocol: protocol, State: connection.Status}
+				portsByPID[connection.Pid][port] = struct{}{}
+			}
+			if connection.Raddr.Port > 0 {
+				port := processPort{Port: connection.Raddr.Port, Scope: "remote", Protocol: protocol, State: connection.Status}
+				portsByPID[connection.Pid][port] = struct{}{}
+			}
 		}
+	} else {
+		warnings = append(warnings, "Network socket details are unavailable: "+err.Error())
 	}
 	ps, e := process.Processes()
 	if e != nil {
@@ -210,7 +230,7 @@ func (a *app) processes(w http.ResponseWriter, _ *http.Request) {
 	}
 	rows := make([]processRow, 0, len(ps))
 	for _, p := range ps {
-		row := processRow{PID: p.Pid}
+		row := processRow{PID: p.Pid, Ports: make([]processPort, 0)}
 		row.PPID, _ = p.Ppid()
 		row.Name, _ = p.Name()
 		row.User, _ = p.Username()
@@ -225,13 +245,18 @@ func (a *app) processes(w http.ResponseWriter, _ *http.Request) {
 		for port := range portsByPID[p.Pid] {
 			row.Ports = append(row.Ports, port)
 		}
-		sort.Slice(row.Ports, func(i, j int) bool { return row.Ports[i] < row.Ports[j] })
+		sort.Slice(row.Ports, func(i, j int) bool {
+			if row.Ports[i].Port != row.Ports[j].Port {
+				return row.Ports[i].Port < row.Ports[j].Port
+			}
+			return row.Ports[i].Scope < row.Ports[j].Scope
+		})
 		state, _ := p.Status()
 		row.State = strings.Join(state, ",")
 		row.Cmdline, _ = p.Cmdline()
 		rows = append(rows, row)
 	}
-	writeJSON(w, 200, rows)
+	writeJSON(w, 200, map[string]any{"processes": rows, "warnings": warnings})
 }
 func processService(pid int32, fallback string) string {
 	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(int(pid)), "cgroup"))

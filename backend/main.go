@@ -49,6 +49,7 @@ type processRow struct {
 	PID     int32         `json:"pid"`
 	PPID    int32         `json:"ppid"`
 	Name    string        `json:"name"`
+	Source  string        `json:"source"`
 	User    string        `json:"user"`
 	Service string        `json:"service"`
 	Exe     string        `json:"exe"`
@@ -264,7 +265,7 @@ func collectSnapshot() networkSnapshot {
 		row.PPID, _ = p.Ppid()
 		row.Name, _ = p.Name()
 		row.User, _ = p.Username()
-		row.Service = processService(p.Pid, row.Name)
+		row.Service, row.Source = processMetadata(p.Pid, row.Name, row.PPID)
 		row.Exe, _ = p.Exe()
 		row.Cwd, _ = p.Cwd()
 		row.CPU, _ = p.CPUPercent()
@@ -384,12 +385,26 @@ func tcpState(code string) string {
 	states := map[string]string{"01": "ESTABLISHED", "02": "SYN_SENT", "03": "SYN_RECV", "04": "FIN_WAIT1", "05": "FIN_WAIT2", "06": "TIME_WAIT", "07": "CLOSE", "08": "CLOSE_WAIT", "09": "LAST_ACK", "0A": "LISTEN", "0B": "CLOSING"}
 	return states[strings.ToUpper(code)]
 }
-func processService(pid int32, fallback string) string {
+func processMetadata(pid int32, fallback string, ppid int32) (string, string) {
 	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(int(pid)), "cgroup"))
 	if err != nil {
-		return fallback
+		if pid <= 2 || ppid == 2 {
+			return fallback, "system"
+		}
+		return fallback, "host"
 	}
 	var scope string
+	service := fallback
+	group := strings.ToLower(string(data))
+	source := "host"
+	switch {
+	case strings.Contains(group, "docker-") || strings.Contains(group, "/docker/"):
+		source = "docker"
+	case strings.Contains(group, "libpod"), strings.Contains(group, "podman"), strings.Contains(group, "containerd"), strings.Contains(group, "kubepods"):
+		source = "container"
+	case pid <= 2 || ppid == 2 || strings.Contains(group, "system.slice") || strings.Contains(group, "init.scope"):
+		source = "system"
+	}
 	for _, line := range strings.Split(string(data), "\n") {
 		parts := strings.SplitN(line, ":", 3)
 		if len(parts) != 3 {
@@ -397,7 +412,7 @@ func processService(pid int32, fallback string) string {
 		}
 		for _, part := range strings.Split(parts[2], "/") {
 			if strings.HasSuffix(part, ".service") {
-				return strings.TrimSuffix(part, ".service")
+				service = strings.TrimSuffix(part, ".service")
 			}
 			if strings.HasSuffix(part, ".scope") {
 				scope = strings.TrimSuffix(part, ".scope")
@@ -405,9 +420,9 @@ func processService(pid int32, fallback string) string {
 		}
 	}
 	if scope != "" && !strings.HasPrefix(scope, "docker-") && !strings.HasPrefix(scope, "libpod-") {
-		return scope
+		service = scope
 	}
-	return fallback
+	return service, source
 }
 func (a *app) getStats(w http.ResponseWriter, _ *http.Request) {
 	a.touchCollector()

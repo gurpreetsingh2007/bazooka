@@ -89,6 +89,11 @@ tbody tr.selected { background: #22301f; box-shadow: inset 2px 0 var(--accent); 
 .muted { color: #788596; }
 .proc-name { display: flex; align-items: center; gap: 7px; font-weight: 600; }
 .process-icon { display: inline-grid; width: 20px; height: 20px; flex: none; place-items: center; border-radius: 5px; background: #263548; color: var(--accent); font-size: 9px; font-weight: 700; }
+.source-tag { display: inline-flex; align-items: center; min-height: 19px; padding: 3px 7px; border: 1px solid #384352; border-radius: 999px; background: #202936; color: #c1ccda; font: 9px var(--mono); line-height: 1; }
+.source-system { border-color: #3c5940; background: #1c2b20; color: #afe28c; }
+.source-docker { border-color: #36516b; background: #1a2a3a; color: #9dcaff; }
+.source-container { border-color: #514572; background: #2a2440; color: #c7b7ff; }
+.source-host { border-color: #50515c; background: #282a32; color: #c3c5d0; }
 .num { color: #d2dae4; }
 .ports { max-width: 105px; overflow: hidden; text-overflow: ellipsis; }
 .port-chip { display: inline-block; margin: 1px 3px 1px 0; padding: 3px 5px; border: 1px solid #34432d; border-radius: 4px; background: #1b2818; color: var(--accent); font: 9px var(--mono); }
@@ -110,6 +115,7 @@ tbody tr.selected { background: #22301f; box-shadow: inset 2px 0 var(--accent); 
 @keyframes panel-in { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: translateX(0); } }
 .inspector-head { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
 .inspector-head h2 { margin: 6px 0 0; overflow-wrap: anywhere; font-size: 20px; letter-spacing: -.4px; }
+.inspector-head .source-tag { margin-top: 8px; }
 .icon-button { width: 28px; height: 28px; padding: 0; color: #9aa6b7; font-size: 20px; }
 .process-identity { display: flex; align-items: center; gap: 10px; margin: 18px 0; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: #0d131c; }
 .large-process-icon { display: grid; width: 38px; height: 38px; flex: none; place-items: center; border-radius: 9px; background: #263548; color: var(--accent); font-size: 15px; font-weight: 700; }
@@ -170,7 +176,7 @@ tbody tr.selected { background: #22301f; box-shadow: inset 2px 0 var(--accent); 
   .process-inspector { position: fixed; z-index: 8; top: 12px; right: 12px; bottom: 12px; width: min(390px, calc(100vw - 24px)); max-height: none; box-shadow: 0 18px 55px #0009; }
 }
 @media (max-width: 1050px) {
-  .col-ppid, .col-user, th:nth-child(2), td:nth-child(2), th:nth-child(4), td:nth-child(4) { display: none; }
+  .col-ppid, .col-user, th:nth-child(2), td:nth-child(2), th:nth-child(5), td:nth-child(5) { display: none; }
   .table-scroll { overflow-x: auto; }
 }
 @media (max-width: 700px) {
@@ -187,7 +193,7 @@ tbody tr.selected { background: #22301f; box-shadow: inset 2px 0 var(--accent); 
   .table-scroll { max-height: calc(100vh - 420px); }
   th, td { padding-right: 7px; padding-left: 7px; }
   th:first-child, td:first-child { padding-left: 10px; }
-  .col-cmdline, th:last-child, td:last-child, th:nth-child(8), td:nth-child(8) { display: none; }
+  .col-cmdline, th:last-child, td:last-child, th:nth-child(9), td:nth-child(9) { display: none; }
   .page-foot { justify-content: center; }
   .page-foot span:last-child { display: none; }
   .confirm { padding: 20px; }
@@ -207,6 +213,10 @@ tbody tr.selected { background: #22301f; box-shadow: inset 2px 0 var(--accent); 
   .action-button.danger { border-color: #e5bdc1; background: #fff0f1; color: #aa303d; }
   .action-button.danger > span { color: #aa303d; }
   .process-identity, .detail-grid > div { border-color: var(--line); background: #f4f7fa; }
+  .source-system { border-color: #cce4be; background: #eef7e8; color: #3f6a26; }
+  .source-docker { border-color: #c7dbef; background: #eef5fb; color: #35658f; }
+  .source-container { border-color: #d8d0f1; background: #f3f0fb; color: #604e9a; }
+  .source-host { border-color: #d8dbe2; background: #f2f3f6; color: #5d6370; }
   .large-process-icon, .process-icon { background: #edf4e7; color: #538b1c; }
   .detail-block .path-value, .command-block p { border-color: var(--line); background: #f6f8fa; color: #536071; }
   .toolbar { border-color: var(--line); }

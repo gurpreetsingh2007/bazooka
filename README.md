@@ -5,7 +5,8 @@ Bazooka is a lightweight host process manager served from one Docker container a
 ## Features
 
 - Host PID, parent PID, name, user, CPU percentage, resident memory, threads, state and command line.
-- Two second refresh with pause, sortable columns, text filter (including listening TCP and bound UDP ports) and parent/child tree view.
+- Two second refresh with pause, sortable columns, field based search and parent/child tree view. Search supports `pid:`, `ppid:`, `port:`, `service:`, `location:`, `exe:`, `cwd:`, `name:`, `user:`, `cmd:` and `state:`; combine terms with spaces and quote phrases such as `cmd:"python -m yubal_api"`.
+- Process details show executable path, working directory, service/cgroup name, listening TCP ports and bound UDP ports. Select a row to open the action and details panel.
 - End (SIGTERM), force kill (SIGKILL), pause (SIGSTOP) and resume (SIGCONT), with confirmation and optional descendants.
 - PID 1 and Bazooka's own PID are protected from signals.
 - Host CPU, memory, load average, uptime and process count.
@@ -21,7 +22,7 @@ openssl rand -hex 32
 docker compose up -d --build
 ```
 
-Open `http://localhost:8080` and enter the same `TM_TOKEN`. Set `PORT` in `.env` to change the listening and published port (the default is 8080). Do not commit `.env`.
+Open `http://localhost:8080` and enter the same `TM_TOKEN`. The HTTP-only browser session lasts seven days and is restored after a page reload. Set `PORT` in `.env` to change the listening and published port (the default is 8080). Do not commit `.env`.
 
 ## Coolify
 

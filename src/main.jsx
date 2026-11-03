@@ -8,8 +8,9 @@ const ACTIONS = [
   { signal: 'stop', label: 'Pause process', icon: 'Ⅱ' },
   { signal: 'cont', label: 'Resume process', icon: '▶' },
 ];
-const QUERY_FIELDS = new Set(['pid', 'ppid', 'port', 'ports', 'service', 'name', 'user', 'cmd', 'command', 'location', 'exe', 'cwd', 'state']);
+const QUERY_FIELDS = new Set(['pid', 'ppid', 'port', 'ports', 'service', 'source', 'name', 'user', 'cmd', 'command', 'location', 'exe', 'cwd', 'state']);
 const prettyState = value => String(value || '?').split(',').map(state => ({ sleep: 'Sleeping', running: 'Running', stop: 'Stopped', idle: 'Idle', zombie: 'Zombie', blocked: 'Blocked' }[state.toLowerCase()] || state)).join(', ');
+const sourceLabel = source => ({ system: 'System', docker: 'Docker', container: 'Container', host: 'Host' }[source] || 'Host');
 const fmtBytes = n => {
   if (!n) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -24,7 +25,7 @@ const tokenize = query => query.match(/(?:"[^"]*"|'[^']*'|\S+)/g)?.map(x => x.re
 function matchesProcess(process, query) {
   const fields = tokenize(query);
   if (!fields.length) return true;
-  const allText = [process.name, process.user, process.service, process.cmdline, process.exe, process.cwd, process.state,
+  const allText = [process.name, process.source, process.user, process.service, process.cmdline, process.exe, process.cwd, process.state,
     process.pid, process.ppid, ...(process.ports || []).map(socket => socket.port)].join(' ').toLowerCase();
   return fields.every(field => {
     const colon = field.indexOf(':');
@@ -38,6 +39,7 @@ function matchesProcess(process, query) {
       case 'ppid': return String(process.ppid) === value;
       case 'port': case 'ports': return (process.ports || []).some(socket => String(socket.port) === value);
       case 'service': return includes(process.service) || includes(process.name);
+      case 'source': return includes(process.source) || includes(sourceLabel(process.source));
       case 'name': return includes(process.name);
       case 'user': return includes(process.user);
       case 'cmd': case 'command': return includes(process.cmdline);
@@ -151,7 +153,7 @@ function App() {
   }, [rows, filter, sort, tree]);
 
   function sortBy(key) {
-    setSort(current => ({ key, dir: current.key === key ? -current.dir : (['name', 'user', 'service', 'exe', 'cwd', 'cmdline', 'state'].includes(key) ? 1 : -1) }));
+    setSort(current => ({ key, dir: current.key === key ? -current.dir : (['name', 'user', 'service', 'source', 'exe', 'cwd', 'cmdline', 'state'].includes(key) ? 1 : -1) }));
   }
   async function sendSignal(action) {
     if (!selected) return;
@@ -186,20 +188,20 @@ function App() {
     <div className={`manager-layout ${selected ? 'with-inspector' : ''}`}>
       <section className="workspace card">
         <div className="toolbar">
-          <div className="search-area"><div className="searchbox"><span>⌕</span><input ref={searchRef} value={filter} onChange={e => setFilter(e.target.value)} placeholder="Search processes… try pid:81320 port:443 service:traefik" aria-label="Search processes" />{filter && <button className="clear-search" onClick={() => setFilter('')} aria-label="Clear search">×</button>}<kbd>/</kbd></div><div className="search-help"><span>Try</span><code>pid:1234</code><code>port:443</code><code>service:docker</code><code>location:/usr/bin</code><span>· combine filters · quote phrases</span></div></div>
+          <div className="search-area"><div className="searchbox"><span>⌕</span><input ref={searchRef} value={filter} onChange={e => setFilter(e.target.value)} placeholder="Search processes… try pid:81320 port:443 source:docker" aria-label="Search processes" />{filter && <button className="clear-search" onClick={() => setFilter('')} aria-label="Clear search">×</button>}<kbd>/</kbd></div><div className="search-help"><span>Try</span><code>pid:1234</code><code>port:443</code><code>source:system</code><code>source:docker</code><span>· combine filters · quote phrases</span></div></div>
           <div className="tool-actions"><label className="switch-label"><input type="checkbox" checked={tree} onChange={e => setTree(e.target.checked)} /><span className="switch" />Tree view</label><button className={paused ? 'primary button' : 'quiet button'} onClick={() => setPaused(!paused)}>{paused ? '▶ Resume' : 'Ⅱ Pause'}</button></div>
         </div>
         {error && <div className="inline-error">{error} <button onClick={refresh}>Retry</button></div>}
         {warnings.map(warning => <div className="data-warning" key={warning}><span>ⓘ</span>{warning}</div>)}
-        <div className="table-scroll"><table><thead><tr>{[['pid','PID'],['ppid','PPID'],['name','NAME'],['user','USER'],['cpu','CPU'],['rss','MEMORY'],['threads','THREADS'],['ports','PORTS'],['state','STATE'],['cmdline','COMMAND']].map(([key, label]) => <th key={key} className={`col-${key}`} onClick={() => sortBy(key)}>{label}{sort.key === key && <span className="sort">{sort.dir === 1 ? '↑' : '↓'}</span>}</th>)}</tr></thead>
+        <div className="table-scroll"><table><thead><tr>{[['pid','PID'],['ppid','PPID'],['name','NAME'],['source','SOURCE'],['user','USER'],['cpu','CPU'],['rss','MEMORY'],['threads','THREADS'],['ports','PORTS'],['state','STATE'],['cmdline','COMMAND']].map(([key, label]) => <th key={key} className={`col-${key}`} onClick={() => sortBy(key)}>{label}{sort.key === key && <span className="sort">{sort.dir === 1 ? '↑' : '↓'}</span>}</th>)}</tr></thead>
           <tbody>{filtered.map(p => <tr key={p.pid} className={selectedPid === p.pid ? 'selected' : ''} onClick={() => setSelectedPid(p.pid)}>
-            <td className="mono">{p.pid}</td><td className="mono muted">{p.ppid}</td><td className="proc-name"><span className="process-icon">{p.name?.slice(0, 1).toUpperCase() || '?'}</span><span style={{ paddingLeft: tree ? (p.depth || 0) * 15 : 0 }}>{tree && p.depth > 0 ? '↳ ' : ''}{p.name || '—'}</span></td><td>{p.user || '—'}</td><td className="num">{p.cpu?.toFixed(1)}%</td><td className="num">{fmtBytes(p.rss)}</td><td className="num">{p.threads}</td><td className="ports mono">{p.ports?.length ? p.ports.slice(0, 2).map(socket => <span className={`port-chip ${socket.scope}`} title={`${socket.protocol} ${socket.scope}${socket.state ? ` · ${socket.state}` : ''}`} key={`${socket.port}-${socket.scope}-${socket.protocol}-${socket.state}`}>{socket.scope === 'local' ? 'L' : 'R'} {socket.port}</span>) : <span className="muted">—</span>}{p.ports?.length > 2 && <span className="port-more">+{p.ports.length - 2}</span>}</td><td><span title={String(p.state).toLowerCase().includes('sleep') ? 'Sleeping means waiting for work; this is normal for most idle services.' : p.state} className={`state state-${String(p.state || '').toLowerCase()[0]}`}>{prettyState(p.state)}</span></td><td className="command" title={p.cmdline}>{p.cmdline || p.name}</td>
-          </tr>)}{!filtered.length && <tr><td colSpan="10" className="empty"><span>{filter ? 'No processes match this search' : 'No processes found'}</span><small>Try a process name, pid:1234, port:443, service:name or location:/path</small></td></tr>}</tbody></table></div>
+            <td className="mono">{p.pid}</td><td className="mono muted">{p.ppid}</td><td className="proc-name"><span className="process-icon">{p.name?.slice(0, 1).toUpperCase() || '?'}</span><span style={{ paddingLeft: tree ? (p.depth || 0) * 15 : 0 }}>{tree && p.depth > 0 ? '↳ ' : ''}{p.name || '—'}</span></td><td><span title={`Process origin: ${sourceLabel(p.source)}`} className={`source-tag source-${p.source || 'host'}`}>{sourceLabel(p.source)}</span></td><td>{p.user || '—'}</td><td className="num">{p.cpu?.toFixed(1)}%</td><td className="num">{fmtBytes(p.rss)}</td><td className="num">{p.threads}</td><td className="ports mono">{p.ports?.length ? p.ports.slice(0, 2).map(socket => <span className={`port-chip ${socket.scope}`} title={`${socket.protocol} ${socket.scope}${socket.state ? ` · ${socket.state}` : ''}`} key={`${socket.port}-${socket.scope}-${socket.protocol}-${socket.state}`}>{socket.scope === 'local' ? 'L' : 'R'} {socket.port}</span>) : <span className="muted">—</span>}{p.ports?.length > 2 && <span className="port-more">+{p.ports.length - 2}</span>}</td><td><span title={String(p.state).toLowerCase().includes('sleep') ? 'Sleeping means waiting for work; this is normal for most idle services.' : p.state} className={`state state-${String(p.state || '').toLowerCase()[0]}`}>{prettyState(p.state)}</span></td><td className="command" title={p.cmdline}>{p.cmdline || p.name}</td>
+          </tr>)}{!filtered.length && <tr><td colSpan="11" className="empty"><span>{filter ? 'No processes match this search' : 'No processes found'}</span><small>Try a process name, pid:1234, port:443, service:name or location:/path</small></td></tr>}</tbody></table></div>
         <footer className="table-foot"><span><b>{filtered.length}</b> of {rows.length} processes</span><span>Host namespace <i className="ok-dot" /> active</span></footer>
       </section>
 
       {selected && <aside className="process-inspector card" key={selected.pid}>
-        <div className="inspector-head"><div><div className="eyebrow">PROCESS DETAILS</div><h2>{selected.name || 'Unknown process'}</h2></div><button className="icon-button" onClick={() => setSelectedPid(null)} aria-label="Close process details">×</button></div>
+        <div className="inspector-head"><div><div className="eyebrow">PROCESS DETAILS</div><h2>{selected.name || 'Unknown process'}</h2><span title={`Process origin: ${sourceLabel(selected.source)}`} className={`source-tag source-${selected.source || 'host'}`}>{sourceLabel(selected.source)}</span></div><button className="icon-button" onClick={() => setSelectedPid(null)} aria-label="Close process details">×</button></div>
         <div className="process-identity"><div className="large-process-icon">{selected.name?.slice(0, 1).toUpperCase() || '?'}</div><div><span>PID {selected.pid}</span><small>Parent {selected.ppid}</small></div><span title={String(selected.state).toLowerCase().includes('sleep') ? 'Sleeping means waiting for work; this is normal for most idle services.' : selected.state} className={`state state-${String(selected.state || '').toLowerCase()[0]}`}>{prettyState(selected.state)}</span></div>
         <div className="detail-grid"><div><span>CPU</span><b>{selected.cpu?.toFixed(1)}%</b></div><div><span>MEMORY</span><b>{fmtBytes(selected.rss)}</b></div><div><span>THREADS</span><b>{selected.threads}</b></div><div><span>USER</span><b>{selected.user || '—'}</b></div></div>
         <div className="detail-block"><span className="detail-label">SERVICE</span><p>{selected.service || selected.name || '—'}</p></div>

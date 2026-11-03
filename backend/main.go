@@ -34,6 +34,15 @@ type app struct {
 	systemStats     stats
 	activeUntil     time.Time
 	collecting      bool
+	previousTotal   float64
+	previousBusy    float64
+	smoothedCPU     float64
+	previousProcess map[int32]processCPUSample
+}
+type processCPUSample struct {
+	total    float64
+	created  int64
+	smoothed float64
 }
 type failure struct {
 	count int
@@ -92,7 +101,7 @@ func main() {
 	if err != nil || n < 1 || n > 65535 {
 		log.Fatal("PORT must be a valid port number")
 	}
-	a := &app{token: token, bad: make(map[string]failure)}
+	a := &app{token: token, bad: make(map[string]failure), previousProcess: make(map[int32]processCPUSample)}
 	go a.collectLoop()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok")) })
@@ -242,7 +251,7 @@ func (a *app) startCollection() {
 	a.collecting = true
 	a.dataMu.Unlock()
 	go func() {
-		snapshot := collectSnapshot()
+		snapshot := collectSnapshot(a)
 		a.dataMu.Lock()
 		a.processRows, a.processWarnings, a.systemStats = snapshot.rows, snapshot.warnings, snapshot.stats
 		a.collecting = false
@@ -250,14 +259,21 @@ func (a *app) startCollection() {
 	}()
 }
 
-func collectSnapshot() networkSnapshot {
+func collectSnapshot(a *app) networkSnapshot {
 	ps, err := process.Processes()
 	if err != nil {
 		return networkSnapshot{rows: []processRow{}, warnings: []string{"Unable to read host processes: " + err.Error()}}
 	}
 	portsByPID, warnings := hostPorts(ps)
+	hostTotal, hostBusy := hostCPUTimes()
+	cpuPercent, cpuDelta := a.sampleHostCPU(hostTotal, hostBusy)
 	rows := make([]processRow, 0, len(ps))
+	currentProcessCPU := make(map[int32]processCPUSample, len(ps))
 	for _, p := range ps {
+		// Bazooka runs in the host PID namespace; keep its own PID out of the managed list.
+		if p.Pid == int32(os.Getpid()) {
+			continue
+		}
 		row := processRow{PID: p.Pid, Ports: portsByPID[p.Pid]}
 		if row.Ports == nil {
 			row.Ports = []processPort{}
@@ -268,7 +284,21 @@ func collectSnapshot() networkSnapshot {
 		row.Service, row.Source = processMetadata(p.Pid, row.Name, row.PPID)
 		row.Exe, _ = p.Exe()
 		row.Cwd, _ = p.Cwd()
-		row.CPU, _ = p.CPUPercent()
+		if times, err := p.Times(); err == nil {
+			created, _ := p.CreateTime()
+			current := processCPUSample{total: times.Total(), created: created}
+			if previous, exists := a.previousProcess[p.Pid]; exists && previous.created == created && cpuDelta > 0 {
+				delta := current.total - previous.total
+				if delta > 0 {
+					raw := delta / cpuDelta * 100
+					current.smoothed = previous.smoothed*0.75 + raw*0.25
+				} else {
+					current.smoothed = previous.smoothed * 0.75
+				}
+			}
+			row.CPU = current.smoothed
+			currentProcessCPU[p.Pid] = current
+		}
 		if m, e := p.MemoryInfo(); e == nil && m != nil {
 			row.RSS = m.RSS
 		}
@@ -278,7 +308,39 @@ func collectSnapshot() networkSnapshot {
 		row.Cmdline, _ = p.Cmdline()
 		rows = append(rows, row)
 	}
-	return networkSnapshot{rows: rows, warnings: warnings, stats: collectStats(len(rows))}
+	a.previousProcess = currentProcessCPU
+	return networkSnapshot{rows: rows, warnings: warnings, stats: collectStats(len(rows), cpuPercent)}
+}
+
+func hostCPUTimes() (float64, float64) {
+	times, err := cpu.Times(false)
+	if err != nil || len(times) == 0 {
+		return 0, 0
+	}
+	t := times[0]
+	total := t.User + t.Nice + t.System + t.Idle + t.Iowait + t.Irq + t.Softirq + t.Steal
+	busy := total - t.Idle - t.Iowait
+	return total, busy
+}
+
+func (a *app) sampleHostCPU(total, busy float64) (float64, float64) {
+	if total <= a.previousTotal || a.previousTotal == 0 {
+		a.previousTotal, a.previousBusy = total, busy
+		return a.smoothedCPU, 0
+	}
+	totalDelta, busyDelta := total-a.previousTotal, busy-a.previousBusy
+	a.previousTotal, a.previousBusy = total, busy
+	if totalDelta <= 0 {
+		return a.smoothedCPU, 0
+	}
+	raw := busyDelta / totalDelta * 100
+	if raw < 0 {
+		raw = 0
+	} else if raw > 100 {
+		raw = 100
+	}
+	a.smoothedCPU = a.smoothedCPU*0.75 + raw*0.25
+	return a.smoothedCPU, totalDelta
 }
 
 // hostPorts correlates socket file descriptors with the tables in each process's
@@ -431,13 +493,10 @@ func (a *app) getStats(w http.ResponseWriter, _ *http.Request) {
 	a.dataMu.RUnlock()
 	writeJSON(w, 200, out)
 }
-func collectStats(processCount int) stats {
-	var out stats
-	if v, e := cpu.Percent(0, false); e == nil && len(v) > 0 {
-		out.CPU = v[0]
-	}
+func collectStats(processCount int, cpuPercent float64) stats {
+	out := stats{CPU: cpuPercent}
 	if m, e := mem.VirtualMemory(); e == nil {
-		out.MemoryUsed = m.Used
+		out.MemoryUsed = m.Total - m.Available
 		out.MemoryTotal = m.Total
 	}
 	if h, e := host.Info(); e == nil {

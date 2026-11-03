@@ -6,10 +6,11 @@ Bazooka is a lightweight host process manager served from one Docker container a
 
 - Host PID, parent PID, name, user, CPU percentage, resident memory, threads, state and command line.
 - Two second refresh with pause, sortable columns, field based search and parent/child tree view. Search supports `pid:`, `ppid:`, `port:`, `service:`, `source:system`, `source:docker`, `location:`, `exe:`, `cwd:`, `name:`, `user:`, `cmd:` and `state:`; combine terms with spaces and quote phrases such as `cmd:"python -m yubal_api"`.
-- Source tags classify each process as **System**, **Docker**, **Container**, or **Host**, using its Linux cgroup. This separates system services from container workloads at a glance.
+- Source tags classify each process as **System**, **Docker**, **Container**, or **Host**, using its Linux cgroup. Bazooka's own PID is omitted from the managed-process list so it cannot be mistaken for a host workload.
 - Process details show executable path, working directory, service/cgroup name, and local and remote TCP/UDP socket ports. Select a row to open the action and details panel.
 - Socket discovery follows host PID file descriptors into each process's network namespace, so it can show host service ports even though Bazooka keeps its own container networking.
 - Host data is collected every two seconds while an authenticated dashboard is active. Collection stops after eight seconds without dashboard requests and resumes on the next request, keeping idle overhead low.
+- CPU and memory cards read host-wide `/proc` metrics. CPU uses interval deltas smoothed across refreshes; memory used is total RAM minus `MemAvailable`.
 - Linux `sleep` is shown as **Sleeping**; this normally means the process is waiting for work and does not indicate a stopped service.
 - End (SIGTERM), force kill (SIGKILL), pause (SIGSTOP) and resume (SIGCONT), with confirmation and optional descendants.
 - PID 1 and Bazooka's own PID are protected from signals.

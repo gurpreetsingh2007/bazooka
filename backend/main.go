@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -20,14 +21,19 @@ import (
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/host"
 	"github.com/shirou/gopsutil/v4/mem"
-	gnet "github.com/shirou/gopsutil/v4/net"
 	"github.com/shirou/gopsutil/v4/process"
 )
 
 type app struct {
-	token string
-	bad   map[string]failure
-	mu    sync.Mutex
+	token           string
+	bad             map[string]failure
+	mu              sync.Mutex
+	dataMu          sync.RWMutex
+	processRows     []processRow
+	processWarnings []string
+	systemStats     stats
+	activeUntil     time.Time
+	collecting      bool
 }
 type failure struct {
 	count int
@@ -62,6 +68,11 @@ type stats struct {
 	Uptime      uint64    `json:"uptime"`
 	Count       int       `json:"count"`
 }
+type networkSnapshot struct {
+	rows     []processRow
+	warnings []string
+	stats    stats
+}
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
@@ -81,6 +92,7 @@ func main() {
 		log.Fatal("PORT must be a valid port number")
 	}
 	a := &app{token: token, bad: make(map[string]failure)}
+	go a.collectLoop()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("POST /api/login", a.login)
@@ -192,45 +204,63 @@ func clientIP(r *http.Request) string {
 	return h
 }
 func (a *app) processes(w http.ResponseWriter, _ *http.Request) {
-	portsByPID := make(map[int32]map[processPort]struct{})
-	var warnings []string
-	if connections, err := gnet.Connections("all"); err == nil {
-		for _, connection := range connections {
-			if connection.Pid <= 0 {
-				continue
-			}
-			protocol := ""
-			switch connection.Type {
-			case uint32(syscall.SOCK_STREAM):
-				protocol = "TCP"
-			case uint32(syscall.SOCK_DGRAM):
-				protocol = "UDP"
-			default:
-				continue
-			}
-			if portsByPID[connection.Pid] == nil {
-				portsByPID[connection.Pid] = make(map[processPort]struct{})
-			}
-			if connection.Laddr.Port > 0 {
-				port := processPort{Port: connection.Laddr.Port, Scope: "local", Protocol: protocol, State: connection.Status}
-				portsByPID[connection.Pid][port] = struct{}{}
-			}
-			if connection.Raddr.Port > 0 {
-				port := processPort{Port: connection.Raddr.Port, Scope: "remote", Protocol: protocol, State: connection.Status}
-				portsByPID[connection.Pid][port] = struct{}{}
-			}
+	a.touchCollector()
+	a.dataMu.RLock()
+	rows := a.processRows
+	warnings := a.processWarnings
+	a.dataMu.RUnlock()
+	writeJSON(w, 200, map[string]any{"processes": rows, "warnings": warnings})
+}
+
+func (a *app) collectLoop() {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		a.dataMu.RLock()
+		active := time.Now().Before(a.activeUntil)
+		a.dataMu.RUnlock()
+		if active {
+			a.startCollection()
 		}
-	} else {
-		warnings = append(warnings, "Network socket details are unavailable: "+err.Error())
 	}
-	ps, e := process.Processes()
-	if e != nil {
-		writeError(w, 500, "Unable to read /proc: "+e.Error())
+}
+
+func (a *app) touchCollector() {
+	a.dataMu.Lock()
+	a.activeUntil = time.Now().Add(8 * time.Second)
+	a.dataMu.Unlock()
+	a.startCollection()
+}
+
+func (a *app) startCollection() {
+	a.dataMu.Lock()
+	if a.collecting {
+		a.dataMu.Unlock()
 		return
 	}
+	a.collecting = true
+	a.dataMu.Unlock()
+	go func() {
+		snapshot := collectSnapshot()
+		a.dataMu.Lock()
+		a.processRows, a.processWarnings, a.systemStats = snapshot.rows, snapshot.warnings, snapshot.stats
+		a.collecting = false
+		a.dataMu.Unlock()
+	}()
+}
+
+func collectSnapshot() networkSnapshot {
+	ps, err := process.Processes()
+	if err != nil {
+		return networkSnapshot{rows: []processRow{}, warnings: []string{"Unable to read host processes: " + err.Error()}}
+	}
+	portsByPID, warnings := hostPorts(ps)
 	rows := make([]processRow, 0, len(ps))
 	for _, p := range ps {
-		row := processRow{PID: p.Pid, Ports: make([]processPort, 0)}
+		row := processRow{PID: p.Pid, Ports: portsByPID[p.Pid]}
+		if row.Ports == nil {
+			row.Ports = []processPort{}
+		}
 		row.PPID, _ = p.Ppid()
 		row.Name, _ = p.Name()
 		row.User, _ = p.Username()
@@ -242,21 +272,117 @@ func (a *app) processes(w http.ResponseWriter, _ *http.Request) {
 			row.RSS = m.RSS
 		}
 		row.Threads, _ = p.NumThreads()
-		for port := range portsByPID[p.Pid] {
-			row.Ports = append(row.Ports, port)
-		}
-		sort.Slice(row.Ports, func(i, j int) bool {
-			if row.Ports[i].Port != row.Ports[j].Port {
-				return row.Ports[i].Port < row.Ports[j].Port
-			}
-			return row.Ports[i].Scope < row.Ports[j].Scope
-		})
 		state, _ := p.Status()
 		row.State = strings.Join(state, ",")
 		row.Cmdline, _ = p.Cmdline()
 		rows = append(rows, row)
 	}
-	writeJSON(w, 200, map[string]any{"processes": rows, "warnings": warnings})
+	return networkSnapshot{rows: rows, warnings: warnings, stats: collectStats(len(rows))}
+}
+
+// hostPorts correlates socket file descriptors with the tables in each process's
+// network namespace. This works with pid: host while preserving the container's network.
+func hostPorts(ps []*process.Process) (map[int32][]processPort, []string) {
+	portsByInode := make(map[string]map[processPort]struct{})
+	pidsByInode := make(map[string]map[int32]struct{})
+	netns := make(map[string]int32)
+	for _, p := range ps {
+		pid := p.Pid
+		if target, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(int(pid)), "ns/net")); err == nil {
+			if _, exists := netns[target]; !exists {
+				netns[target] = pid
+			}
+		}
+		fds, err := os.ReadDir(filepath.Join("/proc", strconv.Itoa(int(pid)), "fd"))
+		if err != nil {
+			continue
+		}
+		for _, fd := range fds {
+			target, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(int(pid)), "fd", fd.Name()))
+			if err != nil || !strings.HasPrefix(target, "socket:[") {
+				continue
+			}
+			inode := strings.TrimSuffix(strings.TrimPrefix(target, "socket:["), "]")
+			if pidsByInode[inode] == nil {
+				pidsByInode[inode] = make(map[int32]struct{})
+			}
+			pidsByInode[inode][pid] = struct{}{}
+		}
+	}
+	var warnings []string
+	for _, pid := range netns {
+		for _, file := range []struct{ name, proto string }{{"tcp", "TCP"}, {"tcp6", "TCP"}, {"udp", "UDP"}, {"udp6", "UDP"}} {
+			f, err := os.Open(filepath.Join("/proc", strconv.Itoa(int(pid)), "net", file.name))
+			if err != nil {
+				continue
+			}
+			scanner := bufio.NewScanner(f)
+			for scanner.Scan() {
+				fields := strings.Fields(scanner.Text())
+				if len(fields) < 10 || fields[0] == "sl" {
+					continue
+				}
+				inode := fields[9]
+				localParts := strings.Split(fields[1], ":")
+				port, err := strconv.ParseUint(localParts[len(localParts)-1], 16, 16)
+				if err != nil || port == 0 {
+					continue
+				}
+				state := fields[3]
+				stateLabel := ""
+				if file.proto == "TCP" {
+					stateLabel = tcpState(state)
+				}
+				item := processPort{Port: uint32(port), Scope: "local", Protocol: file.proto, State: stateLabel}
+				if portsByInode[inode] == nil {
+					portsByInode[inode] = make(map[processPort]struct{})
+				}
+				portsByInode[inode][item] = struct{}{}
+				remoteParts := strings.Split(fields[2], ":")
+				if len(remoteParts) > 1 {
+					remotePort, remoteErr := strconv.ParseUint(remoteParts[len(remoteParts)-1], 16, 16)
+					if remoteErr == nil && remotePort > 0 {
+						item.Port, item.Scope = uint32(remotePort), "remote"
+						portsByInode[inode][item] = struct{}{}
+					}
+				}
+			}
+			if err := scanner.Err(); err != nil {
+				warnings = append(warnings, "Some network socket data could not be read: "+err.Error())
+			}
+			_ = f.Close()
+		}
+	}
+	byPID := make(map[int32][]processPort)
+	for inode, pids := range pidsByInode {
+		for pid := range pids {
+			for port := range portsByInode[inode] {
+				byPID[pid] = append(byPID[pid], port)
+			}
+		}
+	}
+	for pid := range byPID {
+		unique := make(map[processPort]struct{}, len(byPID[pid]))
+		for _, port := range byPID[pid] {
+			unique[port] = struct{}{}
+		}
+		byPID[pid] = byPID[pid][:0]
+		for port := range unique {
+			byPID[pid] = append(byPID[pid], port)
+		}
+		sort.Slice(byPID[pid], func(i, j int) bool {
+			if byPID[pid][i].Port != byPID[pid][j].Port {
+				return byPID[pid][i].Port < byPID[pid][j].Port
+			}
+			return byPID[pid][i].Protocol < byPID[pid][j].Protocol
+		})
+	}
+	return byPID, warnings
+}
+
+func tcpState(code string) string {
+	states := map[string]string{"01": "ESTABLISHED", "02": "SYN_SENT", "03": "SYN_RECV", "04": "FIN_WAIT1", "05": "FIN_WAIT2", "06": "TIME_WAIT", "07": "CLOSE", "08": "CLOSE_WAIT", "09": "LAST_ACK", "0A": "LISTEN", "0B": "CLOSING"}
+	return states[strings.ToUpper(code)]
 }
 func processService(pid int32, fallback string) string {
 	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(int(pid)), "cgroup"))
@@ -284,6 +410,13 @@ func processService(pid int32, fallback string) string {
 	return fallback
 }
 func (a *app) getStats(w http.ResponseWriter, _ *http.Request) {
+	a.touchCollector()
+	a.dataMu.RLock()
+	out := a.systemStats
+	a.dataMu.RUnlock()
+	writeJSON(w, 200, out)
+}
+func collectStats(processCount int) stats {
 	var out stats
 	if v, e := cpu.Percent(0, false); e == nil && len(v) > 0 {
 		out.CPU = v[0]
@@ -302,14 +435,8 @@ func (a *app) getStats(w http.ResponseWriter, _ *http.Request) {
 			out.Load = append(out.Load, n)
 		}
 	}
-	if entries, e := os.ReadDir("/proc"); e == nil {
-		for _, x := range entries {
-			if _, e := strconv.Atoi(x.Name()); e == nil {
-				out.Count++
-			}
-		}
-	}
-	writeJSON(w, 200, out)
+	out.Count = processCount
+	return out
 }
 func (a *app) signal(w http.ResponseWriter, r *http.Request) {
 	var req struct {

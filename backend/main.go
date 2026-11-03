@@ -38,6 +38,9 @@ type processRow struct {
 	PPID    int32    `json:"ppid"`
 	Name    string   `json:"name"`
 	User    string   `json:"user"`
+	Service string   `json:"service"`
+	Exe     string   `json:"exe"`
+	Cwd     string   `json:"cwd"`
 	CPU     float64  `json:"cpu"`
 	RSS     uint64   `json:"rss"`
 	Threads int32    `json:"threads"`
@@ -75,6 +78,9 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("POST /api/login", a.login)
+	mux.Handle("GET /api/session", a.auth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, 200, map[string]bool{"authenticated": true})
+	})))
 	mux.Handle("POST /api/logout", a.auth(http.HandlerFunc(a.logout)))
 	mux.Handle("GET /api/processes", a.auth(http.HandlerFunc(a.processes)))
 	mux.Handle("GET /api/stats", a.auth(http.HandlerFunc(a.getStats)))
@@ -150,8 +156,14 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	delete(a.bad, ip)
 	a.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: "tm_token", Value: a.token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 86400})
+	http.SetCookie(w, &http.Cookie{Name: "tm_token", Value: a.token, Path: "/", HttpOnly: true, Secure: requestIsSecure(r), SameSite: http.SameSiteStrictMode, MaxAge: 604800})
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+func requestIsSecure(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]), "https")
 }
 func (a *app) logout(w http.ResponseWriter, _ *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: "tm_token", Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
@@ -202,6 +214,9 @@ func (a *app) processes(w http.ResponseWriter, _ *http.Request) {
 		row.PPID, _ = p.Ppid()
 		row.Name, _ = p.Name()
 		row.User, _ = p.Username()
+		row.Service = processService(p.Pid, row.Name)
+		row.Exe, _ = p.Exe()
+		row.Cwd, _ = p.Cwd()
 		row.CPU, _ = p.CPUPercent()
 		if m, e := p.MemoryInfo(); e == nil && m != nil {
 			row.RSS = m.RSS
@@ -217,6 +232,31 @@ func (a *app) processes(w http.ResponseWriter, _ *http.Request) {
 		rows = append(rows, row)
 	}
 	writeJSON(w, 200, rows)
+}
+func processService(pid int32, fallback string) string {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(int(pid)), "cgroup"))
+	if err != nil {
+		return fallback
+	}
+	var scope string
+	for _, line := range strings.Split(string(data), "\n") {
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		for _, part := range strings.Split(parts[2], "/") {
+			if strings.HasSuffix(part, ".service") {
+				return strings.TrimSuffix(part, ".service")
+			}
+			if strings.HasSuffix(part, ".scope") {
+				scope = strings.TrimSuffix(part, ".scope")
+			}
+		}
+	}
+	if scope != "" && !strings.HasPrefix(scope, "docker-") && !strings.HasPrefix(scope, "libpod-") {
+		return scope
+	}
+	return fallback
 }
 func (a *app) getStats(w http.ResponseWriter, _ *http.Request) {
 	var out stats
